@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<style>[hidden]{display:none!important}body{margin:0}</style>
+<title>鉄骨わたり</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Dela+Gothic+One&family=Zen+Kaku+Gothic+New:wght@400;700&display=swap">
+<style>
+/* 1画面のゲーム。夕暮れの空の上に、説明カードを1枚だけ重ねる。単一の見た目（夕方の高所）で固定。 */
+:root {
+  --sky: #1c2433;
+  --card: rgba(16, 20, 30, 0.86);
+  --ink: #f3efe6;
+  --ink-dim: #b9b4a8;
+  --steel: #d2643a;
+  --steel-dark: #9c4526;
+  --line: rgba(243, 239, 230, 0.18);
+  --font-display: "Dela Gothic One", "Hiragino Kaku Gothic StdN", "Yu Gothic", sans-serif;
+  --font-body: "Zen Kaku Gothic New", "Hiragino Sans", "Yu Gothic", "Meiryo", sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--sky);
+  color: var(--ink);
+  font-family: var(--font-body);
+  overflow: hidden;
+}
+canvas#view { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
+#overlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  padding-block: 16px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: linear-gradient(180deg, rgba(28,36,51,0.35), rgba(28,36,51,0.75));
+}
+.card {
+  width: 100%; max-width: 30rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 1.6rem 1.5rem 1.4rem;
+  display: flex; flex-direction: column; gap: 1rem;
+}
+.eyebrow { font-size: 0.75rem; letter-spacing: 0.18em; color: var(--ink-dim); margin: 0; }
+h1 {
+  font-family: var(--font-display); font-weight: 400;
+  font-size: clamp(2.4rem, 9vw, 3.4rem); line-height: 1; margin: 0;
+  text-wrap: balance;
+}
+.beam-rule { height: 10px; background: var(--steel); border-top: 3px solid var(--steel-dark); border-bottom: 3px solid var(--steel-dark); }
+.how { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.5rem; font-size: 0.95rem; line-height: 1.6; }
+.how li { display: grid; grid-template-columns: 4.5rem 1fr; gap: 0.6rem; }
+.how b { color: var(--steel); font-weight: 700; }
+.buttons { display: flex; flex-wrap: wrap; gap: 0.6rem; }
+button {
+  font: inherit; font-weight: 700; font-size: 1rem;
+  padding: 0.8rem 1.2rem; border-radius: 4px; cursor: pointer;
+  border: 1px solid var(--steel); color: var(--ink); background: transparent;
+  flex: 1 1 10rem;
+}
+button.primary { background: var(--steel); color: #1a120e; }
+button:disabled { opacity: 0.4; cursor: not-allowed; }
+button:focus-visible { outline: 3px solid var(--ink); outline-offset: 2px; }
+#note { margin: 0; font-size: 0.82rem; color: var(--ink-dim); line-height: 1.6; min-height: 1.3em; }
+</style>
+
+<canvas id="view"></canvas>
+
+<div id="overlay">
+  <div class="card">
+    <p class="eyebrow">高さ 180 m ・ 鉄骨 30 m</p>
+    <h1>鉄骨わたり</h1>
+    <div class="beam-rule" aria-hidden="true"></div>
+    <ul class="how">
+      <li><b>すすむ</b><span>引き金を押している間、見ている方向へ歩きます。（パソコンはクリック、スマホはタッチ）</span></li>
+      <li><b>むき</b><span>VRでは顔を向けた方向。パソコンはマウスを動かした方向。</span></li>
+      <li><b>ルール</b><span>鉄骨からはみ出すと落ちます。向かいのビルの旗まで行けばクリア。</span></li>
+      <li><b>かぜ</b><span>ときどき横風が吹きます。流されたら、反対側を向いて立て直してください。</span></li>
+    </ul>
+    <div class="buttons">
+      <button id="btnVR" class="primary" disabled>VRで遊ぶ</button>
+      <button id="btnFlat">画面で遊ぶ</button>
+    </div>
+    <p id="note">VRが使えるか調べています…</p>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+<script>
+(function () {
+  "use strict";
+
+  // ===== 数値の決まりごと =====
+  var H = 180;                 // ビルの高さ (m)
+  var EYE = 1.6;               // 目の高さ
+  var A_FRONT = -5;            // 手前ビルの端（ここから鉄骨）
+  var B_FRONT = -35;           // 向かいビルの端（鉄骨の終わり）
+  var BEAM_HALF = 0.15;        // 鉄骨の半分の幅
+  var FALL_MARGIN = 0.32;      // 中心からこれ以上ずれたら落ちる
+  var SPEED = 1.1;             // 歩く速さ (m/秒)
+  var GOAL_Z = -37;            // ここまで来たらクリア
+
+  var canvas = document.getElementById("view");
+  var overlay = document.getElementById("overlay");
+  var btnVR = document.getElementById("btnVR");
+  var btnFlat = document.getElementById("btnFlat");
+  var note = document.getElementById("note");
+
+  // ===== 描画の準備 =====
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.xr.enabled = true;
+  renderer.xr.setReferenceSpaceType("local");
+  if (renderer.xr.setFoveation) renderer.xr.setFoveation(1);
+
+  var scene = new THREE.Scene();
+  var SKY_FOG = new THREE.Color(0xc9a98f);
+  scene.background = SKY_FOG.clone();
+  scene.fog = new THREE.Fog(SKY_FOG, 120, 900);
+
+  var camera = new THREE.PerspectiveCamera(72, window.innerWidth / window.innerHeight, 0.05, 2000);
+  camera.rotation.order = "YXZ";
+  var rig = new THREE.Group();
+  rig.add(camera);
+  scene.add(rig);
+
+  scene.add(new THREE.HemisphereLight(0xffe2c4, 0x3a4252, 0.85));
+  var sun = new THREE.DirectionalLight(0xffc89a, 0.75);
+  sun.position.set(-300, 400, -200);
+  scene.add(sun);
+
+  // ===== 空（上は青、地平線は夕焼け） =====
+  (function makeSky() {
+    var c = document.createElement("canvas"); c.width = 4; c.height = 256;
+    var g = c.getContext("2d");
+    var grad = g.createLinearGradient(0, 0, 0, 256);
+    grad.addColorStop(0, "#2b3d63");
+    grad.addColorStop(0.42, "#7d86a6");
+    grad.addColorStop(0.5, "#e8b48c");
+    grad.addColorStop(0.56, "#c9a98f");
+    grad.addColorStop(1, "#c9a98f");
+    g.fillStyle = grad; g.fillRect(0, 0, 4, 256);
+    var tex = new THREE.CanvasTexture(c);
+    var sky = new THREE.Mesh(
+      new THREE.SphereGeometry(1500, 24, 16),
+      new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false })
+    );
+    sky.position.y = H;
+    scene.add(sky);
+  })();
+
+  // ===== 窓のもよう =====
+  function windowCanvas(seed) {
+    var c = document.createElement("canvas"); c.width = 64; c.height = 128;
+    var g = c.getContext("2d");
+    g.fillStyle = "#3b4352"; g.fillRect(0, 0, 64, 128);
+    var r = seed;
+    function rnd() { r = (r * 9301 + 49297) % 233280; return r / 233280; }
+    for (var y = 0; y < 16; y++) {
+      for (var x = 0; x < 8; x++) {
+        var v = rnd();
+        g.fillStyle = v > 0.82 ? "#f2cf8a" : (v > 0.4 ? "#5d6a80" : "#4a5466");
+        g.fillRect(x * 8 + 2, y * 8 + 2, 5, 5);
+      }
+    }
+    return c;
+  }
+  var cityTex = new THREE.CanvasTexture(windowCanvas(7));
+  var towerTex = new THREE.CanvasTexture(windowCanvas(31));
+  towerTex.wrapS = towerTex.wrapT = THREE.RepeatWrapping;
+  towerTex.repeat.set(2, 22);
+
+  // ===== 地面（道路のマス目） =====
+  (function makeGround() {
+    var c = document.createElement("canvas"); c.width = 256; c.height = 256;
+    var g = c.getContext("2d");
+    g.fillStyle = "#2c3038"; g.fillRect(0, 0, 256, 256);
+    g.fillStyle = "#545a63"; g.fillRect(24, 24, 208, 208);
+    g.fillStyle = "#6c7a5c"; g.fillRect(60, 60, 60, 60);
+    g.strokeStyle = "#c9b26a"; g.lineWidth = 2; g.setLineDash([10, 10]);
+    g.beginPath(); g.moveTo(12, 0); g.lineTo(12, 256); g.moveTo(0, 12); g.lineTo(256, 12); g.stroke();
+    var tex = new THREE.CanvasTexture(c);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(60, 60);
+    var ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(3000, 3000),
+      new THREE.MeshLambertMaterial({ map: tex })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    scene.add(ground);
+  })();
+
+  // ===== まわりのビル街 =====
+  (function makeCity() {
+    var count = 260;
+    var mesh = new THREE.InstancedMesh(
+      new THREE.BoxGeometry(1, 1, 1),
+      new THREE.MeshLambertMaterial({ map: cityTex }),
+      count
+    );
+    var m = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
+    var i = 0, guard = 0;
+    while (i < count && guard < 5000) {
+      guard++;
+      var x = (Math.random() - 0.5) * 900;
+      var z = (Math.random() - 0.5) * 900;
+      if (Math.abs(x) < 30 && z > -80 && z < 40) continue;   // 足もとは空けて、下がよく見えるように
+      var near = Math.hypot(x, z) < 150;
+      var h = near ? 20 + Math.random() * 110 : 15 + Math.random() * 150;
+      var w = 12 + Math.random() * 18, d = 12 + Math.random() * 18;
+      p.set(x, h / 2, z); s.set(w, h, d);
+      m.compose(p, q, s);
+      mesh.setMatrixAt(i, m);
+      i++;
+    }
+    mesh.count = i;
+    scene.add(mesh);
+  })();
+
+  // ===== 2つの高いビルと屋上 =====
+  var towerMat = new THREE.MeshLambertMaterial({ map: towerTex });
+  var roofMat = new THREE.MeshLambertMaterial({ color: 0x8a8b86 });
+  var railMat = new THREE.MeshLambertMaterial({ color: 0xd9d4c7 });
+
+  function makeTower(zFront, zBack) {
+    var depth = zBack - zFront, cz = (zFront + zBack) / 2;
+    var t = new THREE.Mesh(new THREE.BoxGeometry(16, H, depth), towerMat);
+    t.position.set(0, H / 2, cz); scene.add(t);
+    var roof = new THREE.Mesh(new THREE.BoxGeometry(16, 0.2, depth), roofMat);
+    roof.position.set(0, H + 0.0, cz); scene.add(roof);
+    // 左右と奥に手すり（鉄骨の側だけ開いている）
+    var backZ = zBack > zFront && zFront < 0 && zBack > 0 ? zBack - 0.3 : zFront + 0.3;
+    function rail(w, d, x, z) {
+      var top = new THREE.Mesh(new THREE.BoxGeometry(w, 0.06, d), railMat);
+      top.position.set(x, H + 1.1, z); scene.add(top);
+      var n = Math.max(2, Math.round(Math.max(w, d) / 1.5));
+      for (var k = 0; k <= n; k++) {
+        var post = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.1, 0.05), railMat);
+        var f = k / n;
+        post.position.set(w > d ? x - w / 2 + f * w : x, H + 0.55, d > w ? z - d / 2 + f * d : z);
+        scene.add(post);
+      }
+    }
+    rail(0.06, depth - 0.6, -7.7, cz);
+    rail(0.06, depth - 0.6, 7.7, cz);
+    return { backZ: backZ, rail: rail, cz: cz };
+  }
+  var tA = makeTower(A_FRONT, 11);
+  tA.rail(15.4, 0.06, 0, 10.7);
+  var tB = makeTower(-51, B_FRONT);
+  tB.rail(15.4, 0.06, 0, -50.7);
+
+  // ===== 鉄骨（I形） =====
+  (function makeBeam() {
+    var len = (A_FRONT - B_FRONT) + 2, cz = (A_FRONT + B_FRONT) / 2;
+    var mat = new THREE.MeshLambertMaterial({ color: 0xc0582f });
+    var top = new THREE.Mesh(new THREE.BoxGeometry(BEAM_HALF * 2, 0.04, len), mat);
+    top.position.set(0, H + 0.12, cz); scene.add(top);
+    var web = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.36, len), mat);
+    web.position.set(0, H - 0.08, cz); scene.add(web);
+    var bottom = new THREE.Mesh(new THREE.BoxGeometry(BEAM_HALF * 2, 0.04, len), mat);
+    bottom.position.set(0, H - 0.26, cz); scene.add(bottom);
+    // 5mごとの白い目じるし
+    var markMat = new THREE.MeshBasicMaterial({ color: 0xf3efe6 });
+    for (var zz = A_FRONT - 5; zz > B_FRONT; zz -= 5) {
+      var mk = new THREE.Mesh(new THREE.BoxGeometry(BEAM_HALF * 2 + 0.002, 0.042, 0.06), markMat);
+      mk.position.set(0, H + 0.12, zz); scene.add(mk);
+    }
+  })();
+
+  // ===== ゴールの旗 =====
+  (function makeFlag() {
+    var pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3, 8), railMat);
+    pole.position.set(0.8, H + 1.5, -40); scene.add(pole);
+    var flag = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 0.7),
+      new THREE.MeshLambertMaterial({ color: 0xd94a3a, side: THREE.DoubleSide }));
+    flag.position.set(1.4, H + 2.6, -40); scene.add(flag);
+  })();
+
+  // ===== 目の前の文字（HUD） =====
+  var hudCanvas = document.createElement("canvas"); hudCanvas.width = 512; hudCanvas.height = 256;
+  var hudCtx = hudCanvas.getContext("2d");
+  var hudTex = new THREE.CanvasTexture(hudCanvas);
+  var hud = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.9, 0.45),
+    new THREE.MeshBasicMaterial({ map: hudTex, transparent: true, depthTest: false, depthWrite: false, fog: false })
+  );
+  hud.position.set(0, -0.22, -1.3);
+  hud.renderOrder = 998;
+  camera.add(hud);
+  var hudLast = "";
+  function setHud(big, small, color) {
+    var key = big + "|" + small + "|" + color;
+    if (key === hudLast) return;
+    hudLast = key;
+    hudCtx.clearRect(0, 0, 512, 256);
+    if (!big && !small) { hudTex.needsUpdate = true; return; }
+    hudCtx.fillStyle = "rgba(16,20,30,0.62)";
+    hudCtx.fillRect(16, 70, 480, 130);
+    hudCtx.textAlign = "center";
+    hudCtx.fillStyle = color || "#f3efe6";
+    hudCtx.font = "bold 46px 'Zen Kaku Gothic New', 'Yu Gothic', sans-serif";
+    hudCtx.fillText(big, 256, 132);
+    hudCtx.fillStyle = "#d8d2c4";
+    hudCtx.font = "26px 'Zen Kaku Gothic New', 'Yu Gothic', sans-serif";
+    hudCtx.fillText(small, 256, 178);
+    hudTex.needsUpdate = true;
+  }
+
+  // ===== 落ちたときの暗転 =====
+  var fade = new THREE.Mesh(
+    new THREE.SphereGeometry(0.3, 12, 8),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0, side: THREE.BackSide, depthTest: false, depthWrite: false, fog: false })
+  );
+  fade.renderOrder = 999;
+  camera.add(fade);
+
+  // ===== 風の音 =====
+  var audio = null;
+  function startAudio() {
+    if (audio) { if (audio.ctx.state === "suspended") audio.ctx.resume(); return; }
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    try {
+      var ctx = new AC();
+      var len = ctx.sampleRate * 2;
+      var buf = ctx.createBuffer(1, len, ctx.sampleRate);
+      var data = buf.getChannelData(0), last = 0;
+      for (var i = 0; i < len; i++) { last = (last + 0.02 * (Math.random() * 2 - 1)) / 1.02; data[i] = last * 3.5; }
+      var src = ctx.createBufferSource(); src.buffer = buf; src.loop = true;
+      var filter = ctx.createBiquadFilter(); filter.type = "lowpass"; filter.frequency.value = 500;
+      var gain = ctx.createGain(); gain.gain.value = 0.08;
+      src.connect(filter); filter.connect(gain); gain.connect(ctx.destination);
+      src.start();
+      audio = { ctx: ctx, gain: gain, filter: filter };
+    } catch (e) { audio = null; }
+  }
+  function setWindSound(level) {
+    if (!audio) return;
+    var t = audio.ctx.currentTime;
+    audio.gain.gain.setTargetAtTime(0.06 + level * 0.5, t, 0.25);
+    audio.filter.frequency.setTargetAtTime(400 + level * 1400, t, 0.25);
+  }
+
+  // ===== ゲームの状態 =====
+  var state = "ready";       // ready / play / fall / clear
+  var walking = false;
+  var px = 0, pz = 6, py = H; // 足もとの位置
+  var vy = 0, fallT = 0, clearT = 0, landT = -1;
+  var startTime = 0, elapsed = 0, started = false;
+  var best = null;
+  try { var b = localStorage.getItem("tekkotsu-best"); if (b) best = parseFloat(b); } catch (e) {}
+
+  // 風
+  var wind = { next: 3, warn: 0, dir: 0, t: 0, dur: 0, power: 0, now: 0 };
+
+  function resetGame() {
+    state = "ready";
+    px = 0; pz = 6; py = H; vy = 0; fallT = 0; clearT = 0; landT = -1;
+    started = false; elapsed = 0;
+    wind.next = 2.5 + Math.random() * 2; wind.warn = 0; wind.t = 0; wind.now = 0;
+    fade.material.opacity = 0;
+    setHud("引き金を押すと進みます", "向かいのビルの旗まで行こう", "#f3efe6");
+  }
+
+  function onBeamZone() { return pz < A_FRONT && pz > B_FRONT; }
+
+  function updateWind(dt) {
+    if (!onBeamZone() || state !== "play") { wind.now = 0; return; }
+    if (wind.t > 0) {
+      wind.t -= dt;
+      var f = 1 - Math.abs((wind.t / wind.dur) * 2 - 1);   // 山なりに強くなって弱まる
+      wind.now = wind.dir * wind.power * f;
+      if (wind.t <= 0) { wind.now = 0; wind.next = 2.5 + Math.random() * 3; }
+      return;
+    }
+    wind.next -= dt;
+    if (wind.next <= 0) {
+      wind.dir = Math.random() < 0.5 ? -1 : 1;
+      wind.power = 0.22 + Math.random() * 0.14;
+      wind.dur = 1.4 + Math.random() * 1.0;
+      wind.t = wind.dur;
+    }
+  }
+
+  // ===== 向きと入力（画面で遊ぶとき） =====
+  var yaw = 0, pitch = -0.15, tYaw = 0, tPitch = -0.15;
+  function lookFromPointer(e) {
+    var w = window.innerWidth, h = window.innerHeight;
+    tYaw = -((e.clientX / w) - 0.5) * 2.6;
+    tPitch = -((e.clientY / h) - 0.5) * 2.2;
+  }
+  canvas.addEventListener("pointermove", lookFromPointer);
+  canvas.addEventListener("pointerdown", function (e) { lookFromPointer(e); walking = true; startAudio(); onPress(); });
+  window.addEventListener("pointerup", function () { walking = false; });
+  window.addEventListener("pointercancel", function () { walking = false; });
+  window.addEventListener("keydown", function (e) {
+    if (e.code === "Space" || e.code === "KeyW" || e.code === "ArrowUp") { walking = true; startAudio(); onPress(); e.preventDefault(); }
+  });
+  window.addEventListener("keyup", function (e) {
+    if (e.code === "Space" || e.code === "KeyW" || e.code === "ArrowUp") walking = false;
+  });
+
+  // ===== コントローラー（VRで遊ぶとき） =====
+  for (var ci = 0; ci < 2; ci++) {
+    var ctrl = renderer.xr.getController(ci);
+    ctrl.addEventListener("selectstart", function () { walking = true; startAudio(); onPress(); });
+    ctrl.addEventListener("selectend", function () { walking = false; });
+    rig.add(ctrl);
+  }
+
+  function onPress() {
+    if (state === "clear" && clearT > 2) resetGame();
+  }
+
+  // ===== 1コマごとの処理 =====
+  var dir = new THREE.Vector3();
+  var clock = new THREE.Clock();
+  var timerTick = 0;
+
+  function tick() {
+    var dt = Math.min(clock.getDelta(), 0.05);
+    var inXR = renderer.xr.isPresenting;
+
+    if (!inXR) {
+      yaw += (tYaw - yaw) * Math.min(1, dt * 8);
+      pitch += (tPitch - pitch) * Math.min(1, dt * 8);
+      camera.rotation.set(pitch, yaw, 0);
+    }
+
+    if (state === "ready" && walking) {
+      state = "play"; started = true; startTime = performance.now();
+    }
+
+    if (state === "play") {
+      updateWind(dt);
+      if (walking) {
+        camera.getWorldDirection(dir);
+        dir.y = 0;
+        if (dir.lengthSq() > 0.0001) {
+          dir.normalize();
+          px += dir.x * SPEED * dt;
+          pz += dir.z * SPEED * dt;
+        }
+      }
+      px += wind.now * dt;
+
+      // 屋上では手すりで止まる
+      if (pz >= A_FRONT) {
+        px = Math.max(-7.4, Math.min(7.4, px));
+        pz = Math.min(10.4, pz);
+      } else if (pz <= B_FRONT) {
+        px = Math.max(-7.4, Math.min(7.4, px));
+        pz = Math.max(-50.4, pz);
+      } else if (Math.abs(px) > FALL_MARGIN) {
+        state = "fall"; vy = 0; fallT = 0;
+        setHud("", "", "");
+      }
+
+      elapsed = (performance.now() - startTime) / 1000;
+      timerTick -= dt;
+      if (state === "play" && timerTick <= 0) {
+        timerTick = 0.1;
+        if (wind.t > 0) {
+          setHud(wind.dir > 0 ? "風 →→→" : "←←← 風", "流されないように！", "#f2cf8a");
+        } else if (onBeamZone()) {
+          var left = Math.max(0, pz - B_FRONT);
+          setHud("のこり " + left.toFixed(0) + " m", elapsed.toFixed(1) + " 秒", "#f3efe6");
+        } else if (pz <= B_FRONT) {
+          setHud("あと少し！", "旗まで歩こう", "#f3efe6");
+        } else {
+          setHud("鉄骨へ進もう", elapsed.toFixed(1) + " 秒", "#f3efe6");
+        }
+      }
+
+      if (pz < GOAL_Z && state === "play") {
+        state = "clear"; clearT = 0;
+        var msg = "タイム " + elapsed.toFixed(1) + " 秒";
+        if (best === null || elapsed < best) {
+          best = elapsed;
+          try { localStorage.setItem("tekkotsu-best", String(best)); } catch (e) {}
+          msg += "（新記録）";
+        } else {
+          msg += "（最高 " + best.toFixed(1) + " 秒）";
+        }
+        setHud("クリア！", msg, "#9fd88a");
+      }
+      setWindSound(Math.abs(wind.now) / 0.36);
+    } else if (state === "fall") {
+      // 地面まで最後まで落ちる（約6秒）。地面に着いたら一瞬で暗くなる。
+      fallT += dt;
+      if (landT < 0) {
+        vy -= 9.8 * dt;
+        py += vy * dt;
+        px += (px > 0 ? 1 : -1) * 0.6 * dt;
+        setWindSound(Math.min(1, fallT / 1.5));
+        if (py <= 0) { py = 0; landT = 0; setWindSound(0); }
+      } else {
+        landT += dt;
+        fade.material.opacity = Math.min(1, landT / 0.08);
+        if (landT > 1.2) {
+          resetGame();
+          setHud("落ちてしまった…", "引き金を押すと、もう一度", "#f2a38a");
+        }
+      }
+    } else if (state === "clear") {
+      clearT += dt;
+      if (clearT > 2 && clearT - dt <= 2) {
+        setHud("クリア！", "引き金でもう一度", "#9fd88a");
+      }
+      setWindSound(0);
+    } else {
+      setWindSound(0);
+    }
+
+    rig.position.set(px, py + (inXR ? EYE : 0), pz);
+    renderer.render(scene, camera);
+  }
+
+  function onResize() {
+    if (renderer.xr.isPresenting) return;
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  }
+  window.addEventListener("resize", onResize);
+
+  // ===== はじめ方 =====
+  function showOverlay(show) { overlay.hidden = !show; }
+
+  btnFlat.addEventListener("click", function () {
+    startAudio();
+    camera.position.set(0, EYE, 0);
+    resetGame();
+    setHud("クリックで進みます", "マウスで向きを変えます", "#f3efe6");
+    showOverlay(false);
+  });
+
+  var currentSession = null;
+  btnVR.addEventListener("click", function () {
+    startAudio();
+    if (!navigator.xr) return;
+    navigator.xr.requestSession("immersive-vr").then(function (session) {
+      currentSession = session;
+      session.addEventListener("end", function () {
+        currentSession = null;
+        camera.position.set(0, EYE, 0);
+        showOverlay(true);
+        onResize();
+      });
+      return renderer.xr.setSession(session).then(function () {
+        camera.position.set(0, 0, 0);
+        resetGame();
+        showOverlay(false);
+      });
+    }).catch(function (err) {
+      note.textContent = "VRを始められませんでした（" + (err && err.message ? err.message : err) + "）。このページを、Oculus のブラウザで直接開いてみてください。";
+    });
+  });
+
+  if (navigator.xr && navigator.xr.isSessionSupported) {
+    navigator.xr.isSessionSupported("immersive-vr").then(function (ok) {
+      btnVR.disabled = !ok;
+      note.textContent = ok
+        ? "VRゴーグルの中で開いている場合は「VRで遊ぶ」を押してください。"
+        : "このブラウザではVRが使えません。「画面で遊ぶ」で試せます。";
+    }).catch(function () {
+      note.textContent = "このブラウザではVRが使えません。「画面で遊ぶ」で試せます。";
+    });
+  } else {
+    note.textContent = "このブラウザではVRが使えません。「画面で遊ぶ」で試せます。";
+  }
+
+  resetGame();
+  camera.position.set(0, EYE, 0);
+  renderer.setAnimationLoop(tick);
+})();
+</script>
+
+</html>
